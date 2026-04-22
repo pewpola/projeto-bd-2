@@ -82,7 +82,9 @@ Abra um terminal no diretório raiz do projeto e execute:
 
 ```bash
 cd backend
-source venv/bin/activate
+python -m venv venv
+source venv/bin/activate  # ou `venv\Scripts\activate` no Windows
+pip install -r requirements.txt
 uvicorn main:app --reload --port 8081
 ```
 
