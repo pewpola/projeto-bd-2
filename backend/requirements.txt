@@ -1,4 +1,4 @@
-fastapi>=0.111.0
-uvicorn>=0.30.0
-sqlglot>=25.5.0
-pydantic>=2.7.0
+fastapi==0.136.0
+pydantic==2.13.3
+sqlglot==30.6.0
+uvicorn==0.45.0

@@ -74,31 +74,52 @@ _(O backend converte essa string em uma Árvore de Sintaxe Abstrata, valida as t
 
 ## 🚀 Como Rodar o Projeto
 
-É necessário utilizar **dois terminais**, um para executar a API (backend) e outro para a Interface (frontend).
+### Opcao recomendada com shell Linux
 
-### 1. Rodando o Backend (API na porta 8081)
+Na raiz do projeto, execute:
 
-Abra um terminal no diretório raiz do projeto e execute:
+```bash
+chmod +x start-app.sh
+./start-app.sh
+```
+
+O script:
+
+- cria ou reaproveita `backend/.venv`
+- ativa o ambiente virtual
+- instala os pacotes de `backend/requirements.txt`
+- roda `npm install` no frontend
+- sobe o backend em `http://localhost:8081`
+- sobe o frontend em `http://localhost:3001`
+
+Pré-requisito do frontend: Node.js `20.19+` ou `22.12+`.
+
+Se você já instalou tudo antes e só quer subir a aplicação novamente:
+
+```bash
+./start-app.sh --skip-install
+```
+
+### Opção manual
+
+Se preferir rodar à mão, use dois terminais.
+
+Backend:
 
 ```bash
 cd backend
-python -m venv venv
-source venv/bin/activate  # ou `venv\Scripts\activate` no Windows
-pip install -r requirements.txt
-uvicorn main:app --reload --port 8081
+python3 -m venv .venv
+source .venv/bin/activate  # ou `.venv\\Scripts\\activate` no Windows
+python -m pip install -r requirements.txt
+python -m uvicorn main:app --reload --port 8081
 ```
 
-_O backend ficará escutando requisições em `http://localhost:8081`._
-
-### 2. Rodando o Frontend (React na porta 3001)
-
-Abra um novo terminal (paralelo ao do backend) no diretório raiz do projeto e execute:
+Frontend:
 
 ```bash
 cd frontend
+npm install
 npm run dev
 ```
-
-_O frontend ficará disponível em `http://localhost:3001`._
 
 Acesse `http://localhost:3001` no navegador. Digite as consultas SQL no campo de texto e clique em "Analisar Consulta". Você visualizará a formulação de álgebra relacional em texto, seguida da visualização hierárquica interativa pelo grafo de execução do plano embaixo.
