@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type KeyboardEvent } from 'react';
 import axios from 'axios';
 import ReactFlow, { Background, Controls, Position } from 'reactflow';
 import type { Edge, Node } from 'reactflow';
@@ -331,6 +331,13 @@ function App() {
     }
   };
 
+  const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key !== 'Enter' || event.shiftKey || event.ctrlKey || event.altKey || event.metaKey) return;
+
+    event.preventDefault();
+    if (!loading) handleProcess();
+  };
+
   const hasComparison = Boolean(comparison && plans.original && plans.optimized);
 
   return (
@@ -345,6 +352,7 @@ function App() {
           rows={4}
           value={query}
           onChange={(event) => setQuery(event.target.value)}
+          onKeyDown={handleKeyDown}
           placeholder={TEXT.placeholder}
         />
 
