@@ -16,15 +16,17 @@ app.add_middleware(
 
 processor = SQLProcessor(SCHEMA)
 
+
 class QueryRequest(BaseModel):
     query: str
+
 
 @app.post("/api/parse")
 async def parse_query(request: QueryRequest):
     try:
         result = processor.process(request.query)
         return result
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erro interno: {str(e)}")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Erro interno: {str(exc)}")

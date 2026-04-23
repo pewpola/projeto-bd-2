@@ -1,12 +1,6 @@
 import React, { useState } from 'react';
 import axios from 'axios';
-import ReactFlow, {
-  Background,
-  Controls,
-  Position,
-  useEdgesState,
-  useNodesState,
-} from 'reactflow';
+import ReactFlow, { Background, Controls, Position } from 'reactflow';
 import type { Edge, Node } from 'reactflow';
 import 'reactflow/dist/style.css';
 
@@ -16,6 +10,84 @@ type PlanNodeData = {
 };
 
 type PlanNode = Node<PlanNodeData>;
+
+type PlanGraph = {
+  algebra: string;
+  edges: Edge[];
+  execution_plan: string[];
+  nodes: PlanNode[];
+};
+
+type ComparisonStats = {
+  original_node_count: number;
+  optimized_node_count: number;
+  original_step_count: number;
+  optimized_step_count: number;
+};
+
+type ParseResponse = {
+  comparison?: ComparisonStats;
+  optimized?: PlanGraph;
+  original?: PlanGraph;
+};
+
+type PlanVariant = 'original' | 'optimized';
+
+const COPY = {
+  title: 'Processador de Consultas SQL',
+  intro:
+    'Compare lado a lado a \u00c1rvore Alg\u00e9brica Original e a \u00c1rvore Alg\u00e9brica Otimizada para entender como a consulta evolui ap\u00f3s as heur\u00edsticas de otimiza\u00e7\u00e3o.',
+  placeholder:
+    'Digite sua consulta SQL. Exemplo: SELECT c.Nome FROM cliente c JOIN pedido p ON c.idCliente = p.Cliente_idCliente WHERE p.ValorTotalPedido > 100;',
+  runButton: 'Comparar \u00e1rvores',
+  summaryLabel: 'Resumo',
+  executionPlanTitle: 'Plano de execu\u00e7\u00e3o',
+  emptyPlan:
+    'Execute uma consulta para visualizar e comparar a \u00c1rvore Alg\u00e9brica Original com a \u00c1rvore Alg\u00e9brica Otimizada.',
+  unexpectedError: 'Erro inesperado ao processar a consulta.',
+  comparisonTitle: 'Comparativo r\u00e1pido',
+  comparisonNote:
+    'A vers\u00e3o otimizada pode ter mais n\u00f3s porque explicita sele\u00e7\u00f5es e proje\u00e7\u00f5es antecipadas. O ganho educacional est\u00e1 em enxergar as opera\u00e7\u00f5es mais cedo na \u00e1rvore.',
+  originalTitle: '\u00c1rvore Alg\u00e9brica Original',
+  optimizedTitle: '\u00c1rvore Alg\u00e9brica Otimizada',
+  nodeCount: 'n\u00f3s',
+  stepCount: 'etapas',
+} as const;
+
+const PLAN_THEME: Record<
+  PlanVariant,
+  {
+    badgeBackground: string;
+    badgeBorder: string;
+    badgeColor: string;
+    cardBackground: string;
+    cardBorder: string;
+    graphBackground: string;
+    graphGrid: string;
+    headerColor: string;
+  }
+> = {
+  original: {
+    badgeBackground: '#e2e8f0',
+    badgeBorder: '#94a3b8',
+    badgeColor: '#0f172a',
+    cardBackground: 'rgba(255,255,255,0.96)',
+    cardBorder: 'rgba(148,163,184,0.28)',
+    graphBackground: '#f8fafc',
+    graphGrid: '#cbd5e1',
+    headerColor: '#0f172a',
+  },
+  optimized: {
+    badgeBackground: '#dcfce7',
+    badgeBorder: '#4ade80',
+    badgeColor: '#166534',
+    cardBackground: 'rgba(240,253,244,0.92)',
+    cardBorder: 'rgba(74,222,128,0.35)',
+    graphBackground: '#f7fee7',
+    graphGrid: '#bbf7d0',
+    headerColor: '#166534',
+  },
+};
 
 const MIN_NODE_WIDTH = 220;
 const MAX_NODE_WIDTH = 360;
@@ -165,7 +237,8 @@ const getLayoutedElements = (inputNodes: PlanNode[], inputEdges: Edge[]) => {
       return cached;
     }
 
-    const size = 1 + (childrenMap.get(nodeId) ?? []).reduce((total, childId) => total + getSubtreeSize(childId), 0);
+    const size =
+      1 + (childrenMap.get(nodeId) ?? []).reduce((total, childId) => total + getSubtreeSize(childId), 0);
     subtreeSizeCache.set(nodeId, size);
     return size;
   };
@@ -290,46 +363,218 @@ const getLayoutedElements = (inputNodes: PlanNode[], inputEdges: Edge[]) => {
   return { nodes, edges };
 };
 
+const preparePlan = (plan?: PlanGraph | null): PlanGraph | null => {
+  if (!plan) {
+    return null;
+  }
+
+  const { nodes, edges } = getLayoutedElements(plan.nodes ?? [], plan.edges ?? []);
+  return {
+    ...plan,
+    nodes,
+    edges,
+  };
+};
+
+const getStepColors = (step: string, variant: PlanVariant) => {
+  if (step.includes('Produto Cartesiano')) {
+    return {
+      backgroundColor: '#fef2f2',
+      borderColor: '#ef4444',
+      color: '#991b1b',
+    };
+  }
+
+  if (step.includes('Otimiza')) {
+    return {
+      backgroundColor: '#ecfccb',
+      borderColor: '#65a30d',
+      color: '#365314',
+    };
+  }
+
+  if (variant === 'optimized') {
+    return {
+      backgroundColor: '#eff6ff',
+      borderColor: '#60a5fa',
+      color: '#1d4ed8',
+    };
+  }
+
+  return {
+    backgroundColor: '#f8fafc',
+    borderColor: '#94a3b8',
+    color: '#0f172a',
+  };
+};
+
+const MetricPill: React.FC<{
+  color: string;
+  label: string;
+  value: number;
+}> = ({ color, label, value }) => (
+  <div
+    style={{
+      padding: '10px 14px',
+      borderRadius: 999,
+      border: `1px solid ${color}`,
+      backgroundColor: 'rgba(255,255,255,0.7)',
+      color: '#0f172a',
+      fontSize: 13,
+      fontWeight: 700,
+    }}
+  >
+    <span style={{ color: '#475569', fontSize: 12, fontWeight: 600 }}>{label}</span>{' '}
+    <span style={{ color: '#0f172a', fontSize: 14, fontWeight: 800 }}>{value}</span>
+  </div>
+);
+
+const PlanCard: React.FC<{
+  plan: PlanGraph;
+  title: string;
+  variant: PlanVariant;
+}> = ({ plan, title, variant }) => {
+  const theme = PLAN_THEME[variant];
+
+  return (
+    <section
+      style={{
+        flex: '1 1 560px',
+        minWidth: 320,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '16px',
+        padding: '18px',
+        borderRadius: '22px',
+        border: `1px solid ${theme.cardBorder}`,
+        backgroundColor: theme.cardBackground,
+        boxShadow: '0 22px 45px rgba(15, 23, 42, 0.07)',
+      }}
+    >
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', alignItems: 'center' }}>
+        <span
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            padding: '8px 12px',
+            borderRadius: 999,
+            border: `1px solid ${theme.badgeBorder}`,
+            backgroundColor: theme.badgeBackground,
+            color: theme.badgeColor,
+            fontSize: 12,
+            fontWeight: 800,
+            letterSpacing: 0.3,
+            textTransform: 'uppercase',
+          }}
+        >
+          {title}
+        </span>
+        <MetricPill color={theme.badgeBorder} label={COPY.nodeCount} value={plan.nodes.length} />
+        <MetricPill color={theme.badgeBorder} label={COPY.stepCount} value={plan.execution_plan.length} />
+      </div>
+
+      <div
+        style={{
+          padding: '14px 16px',
+          borderRadius: '16px',
+          backgroundColor: 'rgba(255,255,255,0.82)',
+          border: `1px solid ${theme.cardBorder}`,
+          color: '#334155',
+          lineHeight: 1.6,
+        }}
+      >
+        <strong style={{ color: theme.headerColor }}>{COPY.summaryLabel}:</strong> {plan.algebra}
+      </div>
+
+      <div
+        style={{
+          minHeight: 420,
+          borderRadius: '18px',
+          overflow: 'hidden',
+          border: `1px solid ${theme.cardBorder}`,
+          backgroundColor: theme.graphBackground,
+        }}
+      >
+        <ReactFlow
+          nodes={plan.nodes}
+          edges={plan.edges}
+          fitView
+          fitViewOptions={{ padding: 0.22, maxZoom: 1.1 }}
+          minZoom={0.15}
+          maxZoom={1.5}
+          nodesDraggable={false}
+          nodesConnectable={false}
+          elementsSelectable={false}
+        >
+          <Background color={theme.graphGrid} gap={18} size={1} />
+          <Controls />
+        </ReactFlow>
+      </div>
+
+      <div>
+        <h3
+          style={{
+            margin: '0 0 12px',
+            color: '#1e293b',
+            fontSize: '1rem',
+          }}
+        >
+          {COPY.executionPlanTitle}
+        </h3>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+          {plan.execution_plan.map((step, index) => {
+            const colors = getStepColors(step, variant);
+
+            return (
+              <div
+                key={`${title}-${index}`}
+                style={{
+                  padding: '12px 14px',
+                  borderRadius: '14px',
+                  borderLeft: `4px solid ${colors.borderColor}`,
+                  backgroundColor: colors.backgroundColor,
+                  color: colors.color,
+                  lineHeight: 1.5,
+                  fontSize: 14,
+                }}
+              >
+                {step}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </section>
+  );
+};
+
 const App: React.FC = () => {
   const [query, setQuery] = useState('');
-  const [nodes, setNodes, onNodesChange] = useNodesState<PlanNodeData>([]);
-  const [edges, setEdges, onEdgesChange] = useEdgesState([]);
-  const [algebra, setAlgebra] = useState('');
+  const [comparison, setComparison] = useState<ComparisonStats | null>(null);
+  const [originalPlan, setOriginalPlan] = useState<PlanGraph | null>(null);
+  const [optimizedPlan, setOptimizedPlan] = useState<PlanGraph | null>(null);
   const [error, setError] = useState('');
-  const [executionPlan, setExecutionPlan] = useState<string[]>([]);
 
   const handleProcess = async () => {
     try {
       setError('');
-      const response = await axios.post('http://localhost:8081/api/parse', { query });
+      const response = await axios.post<ParseResponse>('http://localhost:8081/api/parse', { query });
 
-      if (response.data.nodes) {
-        const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements(
-          response.data.nodes,
-          response.data.edges,
-        );
-        setNodes(layoutedNodes);
-        setEdges(layoutedEdges);
-      } else {
-        setNodes([]);
-        setEdges([]);
-      }
-
-      setAlgebra(response.data.algebra ?? '');
-      setExecutionPlan(response.data.execution_plan ?? []);
+      setOriginalPlan(preparePlan(response.data.original));
+      setOptimizedPlan(preparePlan(response.data.optimized));
+      setComparison(response.data.comparison ?? null);
     } catch (err) {
       if (axios.isAxiosError(err)) {
         setError(err.response?.data?.detail ?? err.message);
       } else if (err instanceof Error) {
         setError(err.message);
       } else {
-        setError('Erro inesperado ao processar a consulta.');
+        setError(COPY.unexpectedError);
       }
 
-      setAlgebra('');
-      setExecutionPlan([]);
-      setNodes([]);
-      setEdges([]);
+      setComparison(null);
+      setOriginalPlan(null);
+      setOptimizedPlan(null);
     }
   };
 
@@ -347,13 +592,8 @@ const App: React.FC = () => {
         color: '#0f172a',
       }}
     >
-      <h1 style={{ margin: '0 0 12px', fontSize: '2rem', lineHeight: 1.1 }}>
-        Processador de Consultas
-      </h1>
-      <p style={{ margin: 0, maxWidth: 820, color: '#475569', lineHeight: 1.6 }}>
-        O plano de execução agora segue a leitura do nó mais profundo até a raiz, priorizando o
-        ramo mais fundo quando a árvore bifurca.
-      </p>
+      <h1 style={{ margin: '0 0 12px', fontSize: '2rem', lineHeight: 1.1 }}>{COPY.title}</h1>
+      <p style={{ margin: 0, maxWidth: 940, color: '#475569', lineHeight: 1.6 }}>{COPY.intro}</p>
 
       <div
         style={{
@@ -368,7 +608,7 @@ const App: React.FC = () => {
         <textarea
           value={query}
           onChange={(event) => setQuery(event.target.value)}
-          placeholder="Digite sua consulta SQL (ex: SELECT c.Nome FROM cliente c JOIN pedido p ON c.idCliente = p.Cliente_idCliente WHERE p.ValorTotalPedido > 100);"
+          placeholder={COPY.placeholder}
           rows={4}
           style={{
             width: '100%',
@@ -398,24 +638,8 @@ const App: React.FC = () => {
             boxShadow: '0 12px 24px rgba(37, 99, 235, 0.25)',
           }}
         >
-          Executar validação e analisar otimização
+          {COPY.runButton}
         </button>
-
-        {algebra && (
-          <div
-            style={{
-              marginTop: '14px',
-              padding: '12px 14px',
-              borderRadius: '14px',
-              backgroundColor: '#eff6ff',
-              border: '1px solid #bfdbfe',
-              color: '#1e3a8a',
-              fontSize: 14,
-            }}
-          >
-            <strong>Resumo:</strong> {algebra}
-          </div>
-        )}
       </div>
 
       {error && (
@@ -433,100 +657,74 @@ const App: React.FC = () => {
         </div>
       )}
 
-      <div
-        style={{
-          display: 'flex',
-          flexWrap: 'wrap',
-          gap: '20px',
-          marginTop: '20px',
-          flex: 1,
-          minHeight: 0,
-          alignItems: 'stretch',
-        }}
-      >
-        <div
-          style={{
-            flex: '1 1 320px',
-            minWidth: 280,
-            maxWidth: 420,
-            overflowY: 'auto',
-            backgroundColor: 'rgba(255,255,255,0.94)',
-            padding: '18px',
-            borderRadius: '20px',
-            border: '1px solid rgba(148,163,184,0.18)',
-            boxShadow: '0 22px 45px rgba(15, 23, 42, 0.07)',
-          }}
-        >
-          <h3
+      {comparison && originalPlan && optimizedPlan ? (
+        <>
+          <div
             style={{
-              marginTop: 0,
-              marginBottom: '14px',
-              color: '#1e293b',
-              borderBottom: '1px solid #e2e8f0',
-              paddingBottom: '10px',
+              marginTop: '20px',
+              padding: '18px',
+              borderRadius: '20px',
+              backgroundColor: 'rgba(255,255,255,0.94)',
+              border: '1px solid rgba(148,163,184,0.22)',
+              boxShadow: '0 22px 45px rgba(15, 23, 42, 0.06)',
             }}
           >
-            Plano de Execução
-          </h3>
-
-          {executionPlan.length > 0 ? (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-              {executionPlan.map((step, index) => {
-                const isOptimization = step.includes('Otimizacao') || step.includes('Otimização');
-                return (
-                  <div
-                    key={`${step}-${index}`}
-                    style={{
-                      padding: '12px 14px',
-                      backgroundColor: isOptimization ? '#ecfccb' : '#f8fafc',
-                      borderLeft: isOptimization ? '4px solid #65a30d' : '4px solid #94a3b8',
-                      borderRadius: '12px',
-                      fontSize: '0.92rem',
-                      lineHeight: 1.5,
-                      color: '#0f172a',
-                    }}
-                  >
-                    {step}
-                  </div>
-                );
-              })}
+            <h2 style={{ margin: '0 0 10px', fontSize: '1.1rem', color: '#0f172a' }}>{COPY.comparisonTitle}</h2>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px' }}>
+              <MetricPill
+                color="#94a3b8"
+                label={`${COPY.originalTitle}: ${COPY.nodeCount}`}
+                value={comparison.original_node_count}
+              />
+              <MetricPill
+                color="#94a3b8"
+                label={`${COPY.originalTitle}: ${COPY.stepCount}`}
+                value={comparison.original_step_count}
+              />
+              <MetricPill
+                color="#4ade80"
+                label={`${COPY.optimizedTitle}: ${COPY.nodeCount}`}
+                value={comparison.optimized_node_count}
+              />
+              <MetricPill
+                color="#4ade80"
+                label={`${COPY.optimizedTitle}: ${COPY.stepCount}`}
+                value={comparison.optimized_step_count}
+              />
             </div>
-          ) : (
-            <p style={{ color: '#64748b', fontSize: '0.95rem', fontStyle: 'italic', lineHeight: 1.6 }}>
-              O plano de execução aparecerá aqui após validar uma consulta com sucesso.
-            </p>
-          )}
-        </div>
+            <p style={{ margin: '12px 0 0', color: '#475569', lineHeight: 1.6 }}>{COPY.comparisonNote}</p>
+          </div>
 
-        <div
-          style={{
-            flex: '2 1 680px',
-            minHeight: 520,
-            backgroundColor: 'rgba(255,255,255,0.94)',
-            borderRadius: '20px',
-            border: '1px solid rgba(148,163,184,0.18)',
-            boxShadow: '0 22px 45px rgba(15, 23, 42, 0.07)',
-            overflow: 'hidden',
-          }}
-        >
-          <ReactFlow
-            nodes={nodes}
-            edges={edges}
-            onNodesChange={onNodesChange}
-            onEdgesChange={onEdgesChange}
-            fitView
-            fitViewOptions={{ padding: 0.2, maxZoom: 1.1 }}
-            minZoom={0.15}
-            maxZoom={1.5}
-            nodesDraggable={false}
-            nodesConnectable={false}
-            elementsSelectable={false}
+          <div
+            style={{
+              display: 'flex',
+              flexWrap: 'wrap',
+              gap: '20px',
+              marginTop: '20px',
+              alignItems: 'stretch',
+            }}
           >
-            <Background color="#dbeafe" gap={18} size={1} />
-            <Controls />
-          </ReactFlow>
-        </div>
-      </div>
+            <PlanCard plan={originalPlan} title={COPY.originalTitle} variant="original" />
+            <PlanCard plan={optimizedPlan} title={COPY.optimizedTitle} variant="optimized" />
+          </div>
+        </>
+      ) : (
+        !error && (
+          <div
+            style={{
+              marginTop: '20px',
+              padding: '18px',
+              borderRadius: '20px',
+              backgroundColor: 'rgba(255,255,255,0.9)',
+              border: '1px solid rgba(148,163,184,0.2)',
+              color: '#64748b',
+              lineHeight: 1.6,
+            }}
+          >
+            {COPY.emptyPlan}
+          </div>
+        )
+      )}
     </div>
   );
 };
