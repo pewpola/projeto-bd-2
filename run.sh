@@ -10,7 +10,7 @@ for arg in "$@"; do
       SKIP_INSTALL=true
       ;;
     *)
-      echo "Uso: ./start-app.sh [--skip-install]"
+      echo "Uso: ./run.sh [--skip-install]"
       exit 1
       ;;
   esac
@@ -161,6 +161,6 @@ FRONTEND_PID=$!
 
 printf '\nBackend:  http://localhost:8081\n'
 printf 'Frontend: http://localhost:3001\n\n'
-printf 'Para pular reinstalacoes futuras, use: ./start-app.sh --skip-install\n\n'
+printf 'Para pular reinstalacoes futuras, use: ./run.sh --skip-install\n\n'
 
 wait -n "$BACKEND_PID" "$FRONTEND_PID"

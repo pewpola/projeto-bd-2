@@ -1,17 +1,41 @@
-# Processador de Consultas - SQL para Álgebra Relacional
+# Processador de Consultas SQL
 
-Este projeto é uma ferramenta de cunho educacional para a disciplina de Banco de Dados, projetada para processar consultas SQL, validá-las em relação a um esquema de metadados de tabelas, convertê-las em Álgebra Relacional e, por fim, renderizar um **Grafo de Operadores (Plano de Execução)** na interface.
+Aplicação educacional para analisar consultas SQL `SELECT`, convertê-las em álgebra relacional e comparar duas visões do plano:
 
-## 🛠️ Tecnologias Utilizadas
+- `Árvore Algébrica Original`
+- `Árvore Algébrica Otimizada`
 
-- **Backend:** Python + FastAPI + Uvicorn (para o servidor) e `sqlglot` (para validação e parsing da árvore sintática do SQL - AST).
-- **Frontend:** React + TypeScript + Vite, usando `axios` para consumo da API e `reactflow` interligado com o `dagre` para roteamento ordenado do grafo gerado das operações algébricas.
+A interface mostra as duas árvores lado a lado, com grafo interativo e plano de execução textual.
 
----
+## Stack
 
-## 🗄️ Esquema Disponível para Consultas
+- Backend: `FastAPI`, `sqlglot`, `uvicorn`
+- Frontend: `React`, `TypeScript`, `Vite`, `React Flow`
 
-O validador já conhece as seguintes tabelas (case insensitive) oriundas da modelagem proposta no trabalho (Imagem 01):
+## O que a aplicação faz
+
+- valida as tabelas da consulta contra o esquema do projeto
+- monta a `Árvore Algébrica Original`
+- monta a `Árvore Algébrica Otimizada`
+- gera a ordem de execução percorrendo do nó mais profundo até a raiz
+- organiza o grafo para evitar sobreposição dos nós
+- apresenta um comparativo rápido entre quantidade de nós e etapas
+
+## Estrutura
+
+```text
+backend/
+  main.py         API FastAPI
+  processor.py    parsing, transformação algébrica e geração dos planos
+  schema.py       esquema conhecido pela aplicação
+frontend/
+  src/App.tsx     interface principal e visualização dos grafos
+  src/index.css   estilos globais da aplicação
+run.sh            inicialização no Linux/macOS
+run.ps1           inicialização no Windows
+```
+
+## Tabelas disponíveis
 
 - `cliente`
 - `endereco`
@@ -24,42 +48,10 @@ O validador já conhece as seguintes tabelas (case insensitive) oriundas da mode
 - `tipocliente`
 - `telefone`
 
----
-
-## 🔍 Exemplos de Consultas Suportadas
-
-Na interface gráfica, cole os comandos SQL a seguir para testar o parseamento e a geração da visualização do grafo de algebra relacional.
-
-**1. Consulta Simples (Projeção e Tabela):**
+## Exemplo de consulta
 
 ```sql
-SELECT Nome, Email FROM cliente
-```
-
-**2. Consulta com Condição (Seleção $\sigma$):**
-
-```sql
-SELECT * FROM produto WHERE Preco > 100
-```
-
-**3. Consulta com Múltiplas Condições:**
-
-```sql
-SELECT Nome, Descricao FROM produto WHERE Preco > 10 AND QuantEstoque < 50
-```
-
-**4. Consulta com JOIN (Junção $\bowtie$):**
-
-```sql
-SELECT c.Nome, p.DataPedido
-FROM cliente c
-JOIN pedido p ON c.idCliente = p.Cliente_idCliente
-```
-
-**5. Consulta Complexa (Múltiplos JOINs e WHERE):**
-
-```sql
-SELECT c.Nome, cat.Descricao, prod.Nome
+SELECT c.Nome, prod.Nome, cat.Descricao
 FROM cliente c
 JOIN pedido p ON c.idCliente = p.Cliente_idCliente
 JOIN pedido_has_produto php ON p.idPedido = php.Pedido_idPedido
@@ -68,50 +60,49 @@ JOIN categoria cat ON prod.Categoria_idCategoria = cat.idCategoria
 WHERE c.Nascimento > '2000-01-01'
 ```
 
-_(O backend converte essa string em uma Árvore de Sintaxe Abstrata, valida as tabelas pelo esquema que criamos, monta as etapas algébricas gerando nós `$\pi$`, `$\sigma$`, `$\bowtie$` e exporta o grafo para organizar com o ReactFlow)._
+## Como executar
 
----
+### Windows
 
-## 🚀 Como Rodar o Projeto
-
-### Opcao recomendada com shell Linux
-
-Na raiz do projeto, execute:
-
-```bash
-chmod +x start-app.sh
-./start-app.sh
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run.ps1
 ```
 
-O script:
+Para reutilizar dependências já instaladas:
 
-- cria ou reaproveita `backend/.venv`
-- ativa o ambiente virtual
-- instala os pacotes de `backend/requirements.txt`
-- roda `npm install` no frontend
-- sobe o backend em `http://localhost:8081`
-- sobe o frontend em `http://localhost:3001`
-
-Pré-requisito do frontend: Node.js `20.19+` ou `22.12+`.
-
-Se você já instalou tudo antes e só quer subir a aplicação novamente:
-
-```bash
-./start-app.sh --skip-install
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run.ps1 -SkipInstall
 ```
 
-### Opção manual
+### Linux ou macOS
 
-Se preferir rodar à mão, use dois terminais.
+```bash
+chmod +x run.sh
+./run.sh
+```
+
+Para reutilizar dependências já instaladas:
+
+```bash
+./run.sh --skip-install
+```
+
+### Execução manual
 
 Backend:
 
 ```bash
 cd backend
-python3 -m venv .venv
-source .venv/bin/activate  # ou `.venv\\Scripts\\activate` no Windows
+python -m venv .venv
+source .venv/bin/activate
 python -m pip install -r requirements.txt
 python -m uvicorn main:app --reload --port 8081
+```
+
+No Windows, a ativação do ambiente virtual pode ser feita com:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
 ```
 
 Frontend:
@@ -122,4 +113,13 @@ npm install
 npm run dev
 ```
 
-Acesse `http://localhost:3001` no navegador. Digite as consultas SQL no campo de texto e clique em "Analisar Consulta". Você visualizará a formulação de álgebra relacional em texto, seguida da visualização hierárquica interativa pelo grafo de execução do plano embaixo.
+## Endereços padrão
+
+- Frontend: `http://localhost:3001`
+- Backend: `http://localhost:8081`
+
+## Observações
+
+- O backend aceita apenas consultas `SELECT`.
+- A árvore otimizada pode ter mais nós que a original, porque explicita seleções e projeções antecipadas.
+- A resposta da API mantém os campos atuais de comparação e também os campos legados do plano otimizado.

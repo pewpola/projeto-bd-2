@@ -1,11 +1,12 @@
+from collections import defaultdict
 from typing import Any, Dict, List, TypedDict
 
 import sqlglot
 from sqlglot import exp
 
-SIGMA = "\u03c3"
-PI = "\u03c0"
-JOIN = "\u2a1d"
+SIGMA = "σ"
+PI = "π"
+JOIN = "⨝"
 
 
 class TableRef(TypedDict):
@@ -33,19 +34,14 @@ class QueryContext(TypedDict):
 
 class SQLProcessor:
     def __init__(self, schema: Dict[str, Dict[str, str]]):
-        self.schema = {k.lower(): {c.lower(): t for c, t in v.items()} for k, v in schema.items()}
+        self.schema = {table.lower(): {column.lower(): kind for column, kind in columns.items()} for table, columns in schema.items()}
 
     def _validate_table_exists(self, table_name: str):
         if table_name.lower() not in self.schema:
-            raise ValueError(f"Tabela '{table_name}' n\u00e3o encontrada no esquema.")
+            raise ValueError(f"Tabela '{table_name}' não encontrada no esquema.")
 
-    def _create_plan_state(self) -> Dict[str, Any]:
-        return {
-            "edges": [],
-            "node_counter": 0,
-            "node_messages": {},
-            "nodes": [],
-        }
+    def _new_state(self) -> Dict[str, Any]:
+        return {"edges": [], "node_counter": 0, "node_messages": {}, "nodes": []}
 
     def _add_node(self, state: Dict[str, Any], label: str, kind: str = "operation") -> str:
         state["node_counter"] += 1
@@ -57,13 +53,65 @@ class SQLProcessor:
         })
         return node_id
 
-    def _add_edge(self, state: Dict[str, Any], source: str, target: str):
-        state["edges"].append({
-            "id": f"e{source}-{target}",
-            "source": source,
-            "target": target,
-            "animated": True,
-        })
+    def _connect(self, state: Dict[str, Any], source: str, target: str):
+        state["edges"].append({"id": f"e{source}-{target}", "source": source, "target": target, "animated": True})
+
+    def _flatten_ands(self, node: exp.Expression | None) -> List[exp.Expression]:
+        if node is None:
+            return []
+        if isinstance(node, exp.And):
+            return self._flatten_ands(node.left) + self._flatten_ands(node.right)
+        return [node]
+
+    def _condition_sql(self, conditions: List[exp.Expression]) -> str:
+        return " AND ".join(condition.sql() for condition in conditions)
+
+    def _table_label(self, alias: str, real_name: str) -> str:
+        return f"Tabela: {real_name}" + (f" ({alias})" if alias != real_name else "")
+
+    def _table_message(self, alias: str, real_name: str) -> str:
+        return f"Ler dados da tabela '{real_name}'" + (f" como '{alias}'." if alias != real_name else ".")
+
+    def _join_details(self, alias: str, conditions: List[exp.Expression]) -> tuple[str, str]:
+        if conditions:
+            cond_sql = self._condition_sql(conditions)
+            return (
+                f"{JOIN} ({cond_sql})",
+                f"Executar junção com '{alias}' utilizando a condição '{cond_sql}'.",
+            )
+
+        return (
+            f"{JOIN} (Produto Cartesiano!)",
+            f"Executar produto cartesiano com '{alias}' (alerta: nenhuma condição de junção foi encontrada).",
+        )
+
+    def _push_unary_node(
+        self,
+        state: Dict[str, Any],
+        source_id: str,
+        label: str,
+        kind: str,
+        message: str,
+    ) -> str:
+        node_id = self._add_node(state, label, kind)
+        self._connect(state, source_id, node_id)
+        state["node_messages"][node_id] = message
+        return node_id
+
+    def _push_join_node(
+        self,
+        state: Dict[str, Any],
+        left_id: str,
+        right_id: str,
+        alias: str,
+        conditions: List[exp.Expression],
+    ) -> str:
+        label, message = self._join_details(alias, conditions)
+        node_id = self._add_node(state, label, "join")
+        self._connect(state, left_id, node_id)
+        self._connect(state, right_id, node_id)
+        state["node_messages"][node_id] = message
+        return node_id
 
     def _build_execution_plan(
         self,
@@ -77,31 +125,25 @@ class SQLProcessor:
             children_map.setdefault(edge["target"], []).append(edge["source"])
             children_map.setdefault(edge["source"], [])
 
-        subtree_height_cache: Dict[str, int] = {}
-        subtree_size_cache: Dict[str, int] = {}
+        height_cache: Dict[str, int] = {}
+        size_cache: Dict[str, int] = {}
 
         def subtree_height(node_id: str) -> int:
-            if node_id in subtree_height_cache:
-                return subtree_height_cache[node_id]
+            if node_id in height_cache:
+                return height_cache[node_id]
 
             children = children_map.get(node_id, [])
-            if not children:
-                subtree_height_cache[node_id] = 0
-                return 0
-
-            height = 1 + max(subtree_height(child_id) for child_id in children)
-            subtree_height_cache[node_id] = height
-            return height
+            height_cache[node_id] = 0 if not children else 1 + max(subtree_height(child) for child in children)
+            return height_cache[node_id]
 
         def subtree_size(node_id: str) -> int:
-            if node_id in subtree_size_cache:
-                return subtree_size_cache[node_id]
+            if node_id in size_cache:
+                return size_cache[node_id]
 
-            size = 1 + sum(subtree_size(child_id) for child_id in children_map.get(node_id, []))
-            subtree_size_cache[node_id] = size
-            return size
+            size_cache[node_id] = 1 + sum(subtree_size(child) for child in children_map.get(node_id, []))
+            return size_cache[node_id]
 
-        def child_sort_key(node_id: str) -> tuple[int, int, int]:
+        def sort_key(node_id: str) -> tuple[int, int, int]:
             return (-subtree_height(node_id), -subtree_size(node_id), int(node_id))
 
         ordered_messages: List[str] = []
@@ -112,11 +154,10 @@ class SQLProcessor:
                 return
 
             visited.add(node_id)
-            for child_id in sorted(children_map.get(node_id, []), key=child_sort_key):
+            for child_id in sorted(children_map.get(node_id, []), key=sort_key):
                 visit(child_id)
 
-            message = node_messages.get(node_id)
-            if message:
+            if message := node_messages.get(node_id):
                 ordered_messages.append(message)
 
         visit(root_node_id)
@@ -135,35 +176,21 @@ class SQLProcessor:
             ),
         }
 
-    def _get_ands(self, node: exp.Expression | None) -> List[exp.Expression]:
-        if node is None:
-            return []
-
-        if isinstance(node, exp.And):
-            return self._get_ands(node.left) + self._get_ands(node.right)
-
-        return [node]
-
     def _extract_table_ref(self, table_expr: exp.Expression) -> TableRef:
         if not isinstance(table_expr, exp.Table):
-            raise ValueError("H\u00e1 suporte apenas para tabelas simples no FROM e nos JOINs.")
+            raise ValueError("Há suporte apenas para tabelas simples no FROM e nos JOINs.")
 
         real_name = table_expr.name.lower()
         alias = table_expr.alias.lower() if table_expr.alias else real_name
         self._validate_table_exists(real_name)
-        return {
-            "alias": alias,
-            "real_name": real_name,
-        }
+        return {"alias": alias, "real_name": real_name}
 
     def _register_table(self, tables_in_query: Dict[str, str], table_order: List[str], table_ref: TableRef):
         alias = table_ref["alias"]
-        real_name = table_ref["real_name"]
-
         if alias in tables_in_query:
             raise ValueError(f"O alias '{alias}' foi declarado mais de uma vez na consulta.")
 
-        tables_in_query[alias] = real_name
+        tables_in_query[alias] = table_ref["real_name"]
         table_order.append(alias)
 
     def _resolve_column_alias(self, column: exp.Column, tables_in_query: Dict[str, str]) -> str | None:
@@ -177,24 +204,18 @@ class SQLProcessor:
         return None
 
     def _collect_used_columns(self, ast: exp.Select, tables_in_query: Dict[str, str]) -> Dict[str, List[str]]:
-        used_cols_per_alias = {alias: set() for alias in tables_in_query}
-
+        used_columns = {alias: set() for alias in tables_in_query}
         for column in ast.find_all(exp.Column):
-            alias = self._resolve_column_alias(column, tables_in_query)
-            if alias in used_cols_per_alias:
-                used_cols_per_alias[alias].add(column.name.lower())
+            if alias := self._resolve_column_alias(column, tables_in_query):
+                used_columns[alias].add(column.name.lower())
+        return {alias: sorted(columns) for alias, columns in used_columns.items()}
 
-        return {alias: sorted(columns) for alias, columns in used_cols_per_alias.items()}
-
-    def _get_tables_for_cond(self, cond: exp.Expression, tables_in_query: Dict[str, str]) -> List[str]:
-        cond_tables = set()
-
-        for column in cond.find_all(exp.Column):
-            alias = self._resolve_column_alias(column, tables_in_query)
-            if alias:
-                cond_tables.add(alias)
-
-        return list(cond_tables)
+    def _tables_for_condition(self, condition: exp.Expression, tables_in_query: Dict[str, str]) -> List[str]:
+        aliases = set()
+        for column in condition.find_all(exp.Column):
+            if alias := self._resolve_column_alias(column, tables_in_query):
+                aliases.add(alias)
+        return list(aliases)
 
     def _extract_query_context(self, ast: exp.Select) -> QueryContext:
         from_clause = ast.args.get("from_")
@@ -203,9 +224,7 @@ class SQLProcessor:
 
         tables_in_query: Dict[str, str] = {}
         table_order: List[str] = []
-
-        base_table = self._extract_table_ref(from_clause.this)
-        self._register_table(tables_in_query, table_order, base_table)
+        self._register_table(tables_in_query, table_order, self._extract_table_ref(from_clause.this))
 
         join_sequence: List[JoinRef] = []
         all_conditions: List[exp.Expression] = []
@@ -213,16 +232,11 @@ class SQLProcessor:
         for join in ast.args.get("joins", []):
             join_table = self._extract_table_ref(join.this)
             self._register_table(tables_in_query, table_order, join_table)
-
-            join_conditions = self._get_ands(join.args.get("on"))
+            join_conditions = self._flatten_ands(join.args.get("on"))
             all_conditions.extend(join_conditions)
-            join_sequence.append({
-                "alias": join_table["alias"],
-                "real_name": join_table["real_name"],
-                "conditions": join_conditions,
-            })
+            join_sequence.append({**join_table, "conditions": join_conditions})
 
-        where_conditions = self._get_ands(ast.args.get("where").this if ast.args.get("where") else None)
+        where_conditions = self._flatten_ands(ast.args.get("where").this if ast.args.get("where") else None)
         all_conditions.extend(where_conditions)
 
         return {
@@ -237,192 +251,167 @@ class SQLProcessor:
             "where_conditions": where_conditions,
         }
 
-    def _build_original_plan(self, context: QueryContext) -> Dict[str, Any]:
-        state = self._create_plan_state()
+    def _build_table_branches(self, state: Dict[str, Any], context: QueryContext) -> Dict[str, str]:
         branches: Dict[str, str] = {}
-
         for alias in context["table_order"]:
-            table_real = context["tables_in_query"][alias]
-            node_label = f"Tabela: {table_real}" + (f" ({alias})" if alias != table_real else "")
-            node_id = self._add_node(state, node_label, "table")
+            real_name = context["tables_in_query"][alias]
+            node_id = self._add_node(state, self._table_label(alias, real_name), "table")
             branches[alias] = node_id
-            state["node_messages"][node_id] = f"Ler dados da tabela '{table_real}'" + (
-                f" como '{alias}'." if alias != table_real else "."
-            )
+            state["node_messages"][node_id] = self._table_message(alias, real_name)
+        return branches
 
-        current_node_id = branches[context["table_order"][0]]
+    def _split_conditions(self, context: QueryContext) -> tuple[Dict[str, List[exp.Expression]], List[exp.Expression]]:
+        single_table = defaultdict(list)
+        multi_table: List[exp.Expression] = []
+
+        for condition in context["all_conditions"]:
+            tables = self._tables_for_condition(condition, context["tables_in_query"])
+            if len(tables) == 1:
+                single_table[tables[0]].append(condition)
+            else:
+                multi_table.append(condition)
+
+        return ({alias: single_table.get(alias, []) for alias in context["table_order"]}, multi_table)
+
+    def _pick_next_join(
+        self,
+        pending_aliases: List[str],
+        joined_aliases: List[str],
+        conditions: List[exp.Expression],
+        tables_in_query: Dict[str, str],
+    ) -> tuple[str, List[exp.Expression]]:
+        for index, alias in enumerate(pending_aliases):
+            matched = []
+            for condition in conditions:
+                condition_tables = self._tables_for_condition(condition, tables_in_query)
+                if alias in condition_tables and any(joined in condition_tables for joined in joined_aliases):
+                    matched.append(condition)
+
+            if matched:
+                pending_aliases.pop(index)
+                for condition in matched:
+                    conditions.remove(condition)
+                return alias, matched
+
+        return pending_aliases.pop(0), []
+
+    def _build_original_plan(self, context: QueryContext) -> Dict[str, Any]:
+        state = self._new_state()
+        branches = self._build_table_branches(state, context)
+        current_node = branches[context["table_order"][0]]
 
         for join_ref in context["join_sequence"]:
-            alias = join_ref["alias"]
-            join_conditions = join_ref["conditions"]
-
-            if join_conditions:
-                cond_str = " AND ".join(cond.sql() for cond in join_conditions)
-                join_label = f"{JOIN} ({cond_str})"
-                join_message = (
-                    f"Executar jun\u00e7\u00e3o com '{alias}' utilizando a condi\u00e7\u00e3o '{cond_str}'."
-                )
-            else:
-                join_label = f"{JOIN} (Produto Cartesiano!)"
-                join_message = (
-                    f"Executar produto cartesiano com '{alias}' "
-                    "(alerta: nenhuma condi\u00e7\u00e3o de jun\u00e7\u00e3o foi encontrada)."
-                )
-
-            join_node = self._add_node(state, join_label, "join")
-            self._add_edge(state, current_node_id, join_node)
-            self._add_edge(state, branches[alias], join_node)
-            current_node_id = join_node
-            state["node_messages"][join_node] = join_message
+            current_node = self._push_join_node(
+                state,
+                current_node,
+                branches[join_ref["alias"]],
+                join_ref["alias"],
+                join_ref["conditions"],
+            )
 
         if context["where_conditions"]:
-            cond_str = " AND ".join(cond.sql() for cond in context["where_conditions"])
-            sigma_node = self._add_node(state, f"{SIGMA} ({cond_str})", "selection")
-            self._add_edge(state, current_node_id, sigma_node)
-            current_node_id = sigma_node
-            state["node_messages"][sigma_node] = (
-                f"Aplicar a sele\u00e7\u00e3o global {SIGMA}({cond_str}) ap\u00f3s as jun\u00e7\u00f5es."
+            cond_sql = self._condition_sql(context["where_conditions"])
+            current_node = self._push_unary_node(
+                state,
+                current_node,
+                f"{SIGMA} ({cond_sql})",
+                "selection",
+                f"Aplicar a seleção global {SIGMA}({cond_sql}) após as junções.",
             )
 
-        proj_str = ", ".join(context["projections"])
-        proj_node = self._add_node(state, f"{PI} ({proj_str})", "projection")
-        self._add_edge(state, current_node_id, proj_node)
-        state["node_messages"][proj_node] = (
-            f"Finalizar a consulta com a proje\u00e7\u00e3o ({PI}) dos atributos: {proj_str}."
+        projection_sql = ", ".join(context["projections"])
+        root_node = self._push_unary_node(
+            state,
+            current_node,
+            f"{PI} ({projection_sql})",
+            "projection",
+            f"Finalizar a consulta com a projeção ({PI}) dos atributos: {projection_sql}.",
         )
-
-        return self._finalize_plan(state, proj_node, "\u00c1rvore alg\u00e9brica original gerada com sucesso.")
+        return self._finalize_plan(state, root_node, "Árvore algébrica original gerada com sucesso.")
 
     def _build_optimized_plan(self, context: QueryContext) -> Dict[str, Any]:
-        state = self._create_plan_state()
-        branches: Dict[str, str] = {}
+        state = self._new_state()
+        branches = self._build_table_branches(state, context)
+        single_table_conditions, multi_table_conditions = self._split_conditions(context)
 
-        for alias in context["table_order"]:
-            table_real = context["tables_in_query"][alias]
-            node_label = f"Tabela: {table_real}" + (f" ({alias})" if alias != table_real else "")
-            node_id = self._add_node(state, node_label, "table")
-            branches[alias] = node_id
-            state["node_messages"][node_id] = f"Ler dados da tabela '{table_real}'" + (
-                f" como '{alias}'." if alias != table_real else "."
-            )
-
-        single_table_conds = {alias: [] for alias in context["tables_in_query"]}
-        multi_table_conds: List[exp.Expression] = []
-
-        for cond in context["all_conditions"]:
-            cond_tables = self._get_tables_for_cond(cond, context["tables_in_query"])
-            if len(cond_tables) == 1:
-                alias = cond_tables[0]
-                if alias in single_table_conds:
-                    single_table_conds[alias].append(cond)
-                    continue
-
-            multi_table_conds.append(cond)
-
-        for alias, conds in single_table_conds.items():
-            if not conds:
+        for alias, conditions in single_table_conditions.items():
+            if not conditions:
                 continue
 
-            cond_str = " AND ".join(cond.sql() for cond in conds)
-            sigma_node = self._add_node(state, f"{SIGMA} ({cond_str})", "selection")
-            self._add_edge(state, branches[alias], sigma_node)
-            branches[alias] = sigma_node
-            state["node_messages"][sigma_node] = (
-                f"Otimiza\u00e7\u00e3o (Redu\u00e7\u00e3o de Tuplas): aplicar sele\u00e7\u00e3o "
-                f"{SIGMA}({cond_str}) diretamente na tabela '{alias}'."
+            cond_sql = self._condition_sql(conditions)
+            branches[alias] = self._push_unary_node(
+                state,
+                branches[alias],
+                f"{SIGMA} ({cond_sql})",
+                "selection",
+                f"Otimização (Redução de Tuplas): aplicar seleção {SIGMA}({cond_sql}) diretamente na tabela '{alias}'.",
             )
 
         if not context["has_star"]:
-            for alias, cols in context["used_cols_per_alias"].items():
-                if not cols:
+            for alias, columns in context["used_cols_per_alias"].items():
+                if not columns:
                     continue
 
-                cols_str = ", ".join(cols)
-                pi_node = self._add_node(state, f"{PI} ({cols_str})", "projection")
-                self._add_edge(state, branches[alias], pi_node)
-                branches[alias] = pi_node
-                state["node_messages"][pi_node] = (
-                    f"Otimiza\u00e7\u00e3o (Redu\u00e7\u00e3o de Atributos): projetar antecipadamente "
-                    f"{PI}({cols_str}) na tabela '{alias}'."
+                column_sql = ", ".join(columns)
+                branches[alias] = self._push_unary_node(
+                    state,
+                    branches[alias],
+                    f"{PI} ({column_sql})",
+                    "projection",
+                    f"Otimização (Redução de Atributos): projetar antecipadamente {PI}({column_sql}) na tabela '{alias}'.",
                 )
 
-        aliases_to_join = list(branches.keys())
-        current_node_id = branches[aliases_to_join[0]]
-        joined_aliases = [aliases_to_join.pop(0)]
+        pending_aliases = context["table_order"][1:]
+        joined_aliases = [context["table_order"][0]]
+        current_node = branches[joined_aliases[0]]
 
-        while aliases_to_join:
-            best_alias = aliases_to_join[0]
-            best_conds: List[exp.Expression] = []
-            best_idx = 0
+        while pending_aliases:
+            alias, join_conditions = self._pick_next_join(
+                pending_aliases,
+                joined_aliases,
+                multi_table_conditions,
+                context["tables_in_query"],
+            )
+            current_node = self._push_join_node(
+                state,
+                current_node,
+                branches[alias],
+                alias,
+                join_conditions,
+            )
+            joined_aliases.append(alias)
 
-            for index, alias in enumerate(aliases_to_join):
-                join_conds = []
-                for cond in list(multi_table_conds):
-                    cond_tables = self._get_tables_for_cond(cond, context["tables_in_query"])
-                    if alias in cond_tables and any(joined_alias in cond_tables for joined_alias in joined_aliases):
-                        join_conds.append(cond)
-
-                if join_conds:
-                    best_alias = alias
-                    best_conds = join_conds
-                    best_idx = index
-                    break
-
-            aliases_to_join.pop(best_idx)
-
-            if best_conds:
-                cond_str = " AND ".join(cond.sql() for cond in best_conds)
-                join_label = f"{JOIN} ({cond_str})"
-                for cond in best_conds:
-                    if cond in multi_table_conds:
-                        multi_table_conds.remove(cond)
-                join_message = (
-                    f"Executar jun\u00e7\u00e3o com '{best_alias}' utilizando a condi\u00e7\u00e3o '{cond_str}'."
-                )
-            else:
-                join_label = f"{JOIN} (Produto Cartesiano!)"
-                join_message = (
-                    f"Executar produto cartesiano com '{best_alias}' "
-                    "(alerta: nenhuma condi\u00e7\u00e3o de jun\u00e7\u00e3o foi encontrada)."
-                )
-
-            join_node = self._add_node(state, join_label, "join")
-            self._add_edge(state, current_node_id, join_node)
-            self._add_edge(state, branches[best_alias], join_node)
-            current_node_id = join_node
-            joined_aliases.append(best_alias)
-            state["node_messages"][join_node] = join_message
-
-        if multi_table_conds:
-            cond_str = " AND ".join(cond.sql() for cond in multi_table_conds)
-            sigma_node = self._add_node(state, f"{SIGMA} ({cond_str})", "selection")
-            self._add_edge(state, current_node_id, sigma_node)
-            current_node_id = sigma_node
-            state["node_messages"][sigma_node] = (
-                f"Aplicar filtros globais entre m\u00faltiplas tabelas {SIGMA}({cond_str})."
+        if multi_table_conditions:
+            cond_sql = self._condition_sql(multi_table_conditions)
+            current_node = self._push_unary_node(
+                state,
+                current_node,
+                f"{SIGMA} ({cond_sql})",
+                "selection",
+                f"Aplicar filtros globais entre múltiplas tabelas {SIGMA}({cond_sql}).",
             )
 
-        proj_str = ", ".join(context["projections"])
-        proj_node = self._add_node(state, f"{PI} ({proj_str})", "projection")
-        self._add_edge(state, current_node_id, proj_node)
-        state["node_messages"][proj_node] = (
-            f"Finalizar a consulta com a proje\u00e7\u00e3o ({PI}) dos atributos: {proj_str}."
+        projection_sql = ", ".join(context["projections"])
+        root_node = self._push_unary_node(
+            state,
+            current_node,
+            f"{PI} ({projection_sql})",
+            "projection",
+            f"Finalizar a consulta com a projeção ({PI}) dos atributos: {projection_sql}.",
         )
-
-        return self._finalize_plan(state, proj_node, "\u00c1rvore alg\u00e9brica otimizada gerada com sucesso.")
+        return self._finalize_plan(state, root_node, "Árvore algébrica otimizada gerada com sucesso.")
 
     def process(self, query: str) -> Dict[str, Any]:
         try:
             ast = sqlglot.parse_one(query)
             if not isinstance(ast, exp.Select):
-                raise ValueError("H\u00e1 suporte apenas para consultas SELECT.")
+                raise ValueError("Há suporte apenas para consultas SELECT.")
         except Exception as exc:
-            raise ValueError(f"Erro de sintaxe SQL ou consulta n\u00e3o suportada: {str(exc)}") from exc
+            raise ValueError(f"Erro de sintaxe SQL ou consulta não suportada: {exc}") from exc
 
         context = self._extract_query_context(ast)
         original_plan = self._build_original_plan(context)
         optimized_plan = self._build_optimized_plan(context)
-
         comparison = {
             "original_node_count": len(original_plan["nodes"]),
             "optimized_node_count": len(optimized_plan["nodes"]),
