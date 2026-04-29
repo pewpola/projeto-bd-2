@@ -26,9 +26,9 @@ class QueryContext(TypedDict):
     has_star: bool
     join_sequence: List[JoinRef]
     projections: List[str]
+    projected_cols_per_alias: Dict[str, List[str]]
     table_order: List[str]
     tables_in_query: Dict[str, str]
-    used_cols_per_alias: Dict[str, List[str]]
     where_conditions: List[exp.Expression]
 
 
@@ -203,12 +203,35 @@ class SQLProcessor:
 
         return None
 
-    def _collect_used_columns(self, ast: exp.Select, tables_in_query: Dict[str, str]) -> Dict[str, List[str]]:
+    def _collect_columns_from_expressions(
+        self,
+        expressions: List[exp.Expression],
+        tables_in_query: Dict[str, str],
+    ) -> Dict[str, List[str]]:
         used_columns = {alias: set() for alias in tables_in_query}
-        for column in ast.find_all(exp.Column):
-            if alias := self._resolve_column_alias(column, tables_in_query):
-                used_columns[alias].add(column.name.lower())
+
+        for expression in expressions:
+            for column in expression.find_all(exp.Column):
+                if alias := self._resolve_column_alias(column, tables_in_query):
+                    used_columns[alias].add(column.name.lower())
+
         return {alias: sorted(columns) for alias, columns in used_columns.items()}
+
+    def _collect_projected_columns(
+        self,
+        ast: exp.Select,
+        all_conditions: List[exp.Expression],
+        tables_in_query: Dict[str, str],
+    ) -> Dict[str, List[str]]:
+        later_conditions = [
+            condition
+            for condition in all_conditions
+            if len(self._tables_for_condition(condition, tables_in_query)) > 1
+        ]
+        return self._collect_columns_from_expressions(
+            [*ast.expressions, *later_conditions],
+            tables_in_query,
+        )
 
     def _tables_for_condition(self, condition: exp.Expression, tables_in_query: Dict[str, str]) -> List[str]:
         aliases = set()
@@ -245,9 +268,9 @@ class SQLProcessor:
             "has_star": any(isinstance(expression, exp.Star) for expression in ast.expressions),
             "join_sequence": join_sequence,
             "projections": [expression.sql() for expression in ast.expressions],
+            "projected_cols_per_alias": self._collect_projected_columns(ast, all_conditions, tables_in_query),
             "table_order": table_order,
             "tables_in_query": tables_in_query,
-            "used_cols_per_alias": self._collect_used_columns(ast, tables_in_query),
             "where_conditions": where_conditions,
         }
 
@@ -348,7 +371,7 @@ class SQLProcessor:
             )
 
         if not context["has_star"]:
-            for alias, columns in context["used_cols_per_alias"].items():
+            for alias, columns in context["projected_cols_per_alias"].items():
                 if not columns:
                     continue
 
